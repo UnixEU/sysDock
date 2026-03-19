@@ -1,0 +1,146 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: ${POSTGRES_CONTAINER_NAME:-sysdock-pgdb}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - sysdock_postgres:/var/lib/postgresql/data
+    networks:
+      sysdock-net:
+        aliases:
+          - ${POSTGRES_HOST:-sysdock-pgdb}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d ${POSTGRES_DB} -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    container_name: ${REDIS_CONTAINER_NAME:-sysdock-kvdb}
+    command: redis-server --appendonly yes
+    volumes:
+      - sysdock_redis:/data
+    networks:
+      sysdock-net:
+        aliases:
+          - ${REDIS_HOST:-sysdock-kvdb}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  socket-proxy:
+    image: ${SOCKET_PROXY_IMAGE:-ghcr.io/tecnativa/docker-socket-proxy:latest}
+    container_name: ${SOCKET_PROXY_CONTAINER_NAME:-sysdock-socket-proxy}
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      INFO: 1
+      SYSTEM: 1
+      BUILD: 1
+      NETWORKS: 1
+      VOLUMES: 1
+      VERSION: 1
+      PING: 1
+      POST: 1
+      DELETE: 1
+      EXEC: 1
+      AUTH: 0
+      EVENTS: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      sysdock-net:
+        aliases:
+          - sysdock-socket-proxy
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ${BACKEND_CONTAINER_NAME:-sysdock-backend}
+    environment:
+      APP_NAME: ${APP_NAME}
+      APP_VERSION: ${APP_VERSION}
+      DEBUG: ${DEBUG}
+      SECRET_KEY: ${SECRET_KEY}
+      ALGORITHM: ${ALGORITHM}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES}
+      COOKIE_SECURE: ${COOKIE_SECURE:-True}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-strict}
+      ENABLE_CONTAINER_SHELL: ${ENABLE_CONTAINER_SHELL:-True}
+      CONTAINER_SHELL_IDLE_TIMEOUT_SECONDS: ${CONTAINER_SHELL_IDLE_TIMEOUT_SECONDS:-1800}
+      CONTAINER_SHELL_MAX_COLS: ${CONTAINER_SHELL_MAX_COLS:-240}
+      CONTAINER_SHELL_MAX_ROWS: ${CONTAINER_SHELL_MAX_ROWS:-80}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_DB: ${REDIS_DB}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS}
+      DOCKER_HOST: ${DOCKER_HOST:-tcp://sysdock-socket-proxy:2375}
+    expose:
+      - "${BACKEND_CONTAINER_PORT:-8000}"
+    networks:
+      sysdock-net:
+        aliases:
+          - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      socket-proxy:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ${FRONTEND_CONTAINER_NAME:-sysdock-frontend}
+    environment:
+      FRONTEND_HTTP_CONTAINER_PORT: ${FRONTEND_HTTP_CONTAINER_PORT:-80}
+      FRONTEND_HOST_PORT: ${FRONTEND_HOST_PORT:-443}
+      FRONTEND_CONTAINER_PORT: ${FRONTEND_CONTAINER_PORT:-443}
+      FRONTEND_SERVER_NAME: ${FRONTEND_SERVER_NAME:-localhost}
+      FRONTEND_TLS_CERT_FILENAME: ${FRONTEND_TLS_CERT_FILENAME:-custom-server.crt}
+      FRONTEND_TLS_KEY_FILENAME: ${FRONTEND_TLS_KEY_FILENAME:-custom-server.key}
+    ports:
+      - "${FRONTEND_HTTP_HOST_PORT:-80}:${FRONTEND_HTTP_CONTAINER_PORT:-80}"
+      - "${FRONTEND_HOST_PORT:-443}:${FRONTEND_CONTAINER_PORT:-443}"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      sysdock-net:
+        aliases:
+          - frontend
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  sysdock_postgres:
+    name: ${POSTGRES_VOLUME_NAME:-sysdock_postgres}
+    driver: local
+  sysdock_redis:
+    name: ${REDIS_VOLUME_NAME:-sysdock_redis}
+    driver: local
+
+networks:
+  sysdock-net:
+    name: ${DOCKER_NETWORK_NAME:-sysdock-net}
+    driver: bridge
